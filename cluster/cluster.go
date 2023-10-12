@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"github.com/godyy/gserver/cluster/data"
+	"github.com/godyy/gserver/cluster/msg"
 	"github.com/godyy/gserver/cluster/session"
 	"github.com/godyy/gutils/log"
 	"github.com/pkg/errors"
@@ -39,7 +40,7 @@ type Cluster struct {
 	dd      data.Driver      // 集群数据驱动
 }
 
-func CreateCluster(config *Config, h session.Handler, logger log.Logger) (*Cluster, error) {
+func CreateCluster(config *Config, h session.Handler, msgCodec msg.Codec, logger log.Logger) (*Cluster, error) {
 	c := &Cluster{
 		config: config,
 	}
@@ -61,6 +62,7 @@ func CreateCluster(config *Config, h session.Handler, logger log.Logger) (*Clust
 		},
 		config.Service,
 		h,
+		msgCodec,
 		logger,
 	)
 	c.service.Start()

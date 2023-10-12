@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	cmsg "github.com/godyy/gserver/cluster/msg"
+
 	"github.com/godyy/gnet"
 	"github.com/godyy/gutils/log"
 	"github.com/pkg/errors"
@@ -25,8 +27,8 @@ var errSessionInactive = errors.New("session inactive")
 var errLowerLevelSessionNotMatch = errors.New("lower level session not match")
 var errUpperLevelSessionClosed = errors.New("upper level session closed")
 
-var msgPing = &heartbeatMsg{Ping: true}
-var msgPong = &heartbeatMsg{Ping: false}
+var msgPing = &msgHeartbeat{Ping: true}
+var msgPong = &msgHeartbeat{Ping: false}
 
 type Config struct {
 	// 心跳超时 ms
@@ -239,13 +241,11 @@ func (s *Session) onInactiveTimer() {
 	s.doClose(errSessionInactive)
 }
 
-// SendPacket 发送数据包
-func (s *Session) SendPacket(p *gnet.Packet, timeout ...time.Duration) error {
-	if p == nil {
+// SendMsg 发送数据包
+func (s *Session) SendMsg(msg cmsg.Msg, timeout ...time.Duration) error {
+	if msg == nil {
 		return nil
 	}
-
-	defer s.service.putPacket(p)
 
 	s.mtx.Lock()
 	if s.state != sessionStarted {
@@ -255,19 +255,20 @@ func (s *Session) SendPacket(p *gnet.Packet, timeout ...time.Duration) error {
 	s.active()
 	s.mtx.Unlock()
 
-	msg := applicationMsg{Payload: p}
-	return s.sendMessage(&msg, timeout...)
+	appMsg := &msgPayload{Payload: msg}
+	return s.sendMessage(appMsg, timeout...)
 }
 
-func (s *Session) sendMessage(msg message, timeout ...time.Duration) error {
+func (s *Session) sendMessage(msg msg, timeout ...time.Duration) error {
 	if msg == nil {
 		return nil
 	}
 
-	p := gnet.GetPacket(msg.size())
-	err := encodeMessage(msg, p)
+	defer msg.recycle()
+
+	p, err := s.service.encodeMsg(msg)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	return s.gSession.SendPacket(p, timeout...)
@@ -279,13 +280,14 @@ func (s *Session) OnSessionPacket(gSession gnet.Session, p *gnet.Packet) error {
 		return errLowerLevelSessionNotMatch
 	}
 
-	msg, occupied, err := decodeMessage(p)
+	defer s.service.putPacket(p)
+
+	msg, err := s.service.decodeMsg(p)
 	if err != nil {
-		return errors.WithMessage(err, "decode packet")
+		return errors.WithMessage(err, "decode msg")
 	}
-	if !occupied {
-		defer s.service.putPacket(p)
-	}
+
+	defer msg.recycle()
 
 	s.mtx.Lock()
 	if s.state == sessionClosed {
@@ -294,20 +296,20 @@ func (s *Session) OnSessionPacket(gSession gnet.Session, p *gnet.Packet) error {
 	}
 
 	switch msg.msgType() {
-	case msgHeartbeat:
+	case mtHeartbeat:
 		s.mtx.Unlock()
-		msgHeartbeat := msg.(*heartbeatMsg)
+		msgHeartbeat := msg.(*msgHeartbeat)
 		s.logger.Info("session receive heartbeat")
 		if msgHeartbeat.Ping {
 			if err := s.sendMessage(msgPong); err != nil {
 				return errors.WithMessage(err, "reply heartbeat")
 			}
 		}
-	case msgApplication:
+	case mtPayload:
 		s.active()
 		s.mtx.Unlock()
-		msgApplication := msg.(*applicationMsg)
-		return s.service.onSessionPacket(s, msgApplication.Payload)
+		msgApplication := msg.(*msgPayload)
+		return s.service.onSessionMsg(s, msgApplication.Payload)
 	default:
 		s.mtx.Unlock()
 		return fmt.Errorf("receive invalid messge type %d", msg.msgType())

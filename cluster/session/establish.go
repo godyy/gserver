@@ -123,7 +123,7 @@ func (se *sessionEs) startActive(remoteAddr string) error {
 }
 
 // startPassive 开始被动建立
-func (se *sessionEs) startPassive(conn net.Conn, hs *handshakeMsg) error {
+func (se *sessionEs) startPassive(conn net.Conn, hs *msgHandshake) error {
 	se.mtx.Lock()
 	defer se.mtx.Unlock()
 
@@ -244,7 +244,7 @@ func (e *activeSessionEs) run(remoteNodeId string, remoteAddr string) {
 	config := e.service.config
 
 	// 发送握手请求
-	if err := e.service.writeMessage(conn, &handshakeMsg{NodeId: e.service.NodeId, Token: config.Token}, config.GetHandshakeTimeout()); err != nil {
+	if err := e.service.writeMessage(conn, &msgHandshake{NodeId: e.service.NodeId, Token: config.Token}, config.GetHandshakeTimeout()); err != nil {
 		e.fail(errors.WithMessage(err, "write handshake"))
 		return
 	}
@@ -256,24 +256,26 @@ func (e *activeSessionEs) run(remoteNodeId string, remoteAddr string) {
 		return
 	}
 
+	defer msg.recycle()
+
 	switch msg.msgType() {
-	case msgHandshakeAck:
+	case mtHandshakeAck:
 		// 收到握手确认
 
-		ack := msg.(*handshakeAckMsg)
+		ack := msg.(*msgHandshakeAck)
 		if ack.NodeId != remoteNodeId {
-			e.service.writeMessage(conn, &handshakeRejectMsg{Reason: "nodeId wrong"}, config.GetHandshakeTimeout())
+			e.service.writeMessage(conn, &msgHandshakeReject{Reason: "nodeId wrong"}, config.GetHandshakeTimeout())
 			e.fail(errEsAckNodeIdWrong)
 			return
 		}
 		if ack.Token != config.Token {
-			e.service.writeMessage(conn, &handshakeRejectMsg{Reason: "token wrong"}, config.GetHandshakeTimeout())
+			e.service.writeMessage(conn, &msgHandshakeReject{Reason: "token wrong"}, config.GetHandshakeTimeout())
 			e.fail(errEsAckTokenWrong)
 			return
 		}
 
 		// 回复握手完成
-		if err := e.service.writeMessage(conn, &handshakeCompletedMsg{}, config.GetHandshakeTimeout()); err != nil {
+		if err := e.service.writeMessage(conn, &msgHandshakeCompleted{}, config.GetHandshakeTimeout()); err != nil {
 			e.fail(errors.WithMessage(err, "write handshakeCompleted"))
 			return
 		}
@@ -287,9 +289,9 @@ func (e *activeSessionEs) run(remoteNodeId string, remoteAddr string) {
 
 		e.success(session)
 
-	case msgHandshakeReject:
+	case mtHandshakeReject:
 		// 握手被拒绝
-		reject := msg.(*handshakeRejectMsg)
+		reject := msg.(*msgHandshakeReject)
 		e.fail(fmt.Errorf("handshake rejected: %s", reject.Reason))
 
 	default:
@@ -310,20 +312,20 @@ type passiveSessionEs struct {
 	*sessionEs
 }
 
-func (e *passiveSessionEs) run(conn net.Conn, handshake *handshakeMsg) {
+func (e *passiveSessionEs) run(conn net.Conn, handshake *msgHandshake) {
 	config := e.service.config
 	remoteNodeId := handshake.NodeId
 
 	// 校验token
 	if handshake.Token != config.Token {
 		// token比对失败, 拒绝握手
-		e.service.writeMessage(conn, &handshakeRejectMsg{Reason: "token wrong"}, config.GetHandshakeTimeout())
+		e.service.writeMessage(conn, &msgHandshakeReject{Reason: "token wrong"}, config.GetHandshakeTimeout())
 		e.fail(errEsTokenWrong)
 		return
 	}
 
 	// 回复握手确认
-	if err := e.service.writeMessage(conn, &handshakeAckMsg{NodeId: e.service.NodeId, Token: config.Token}, config.GetHandshakeTimeout()); err != nil {
+	if err := e.service.writeMessage(conn, &msgHandshakeAck{NodeId: e.service.NodeId, Token: config.Token}, config.GetHandshakeTimeout()); err != nil {
 		e.fail(errors.WithMessage(err, "write handshakeAck"))
 		return
 	}
@@ -335,8 +337,10 @@ func (e *passiveSessionEs) run(conn net.Conn, handshake *handshakeMsg) {
 		return
 	}
 
+	defer response.recycle()
+
 	switch response.msgType() {
-	case msgHandshakeCompleted:
+	case mtHandshakeCompleted:
 		// 握手完成
 		session := newSession(e.id, e.service, false, remoteNodeId, gnet.NewTCPSession(conn.(*net.TCPConn)), e.service.logger)
 		if err := session.start(e.service.sessionOption); err != nil {
@@ -346,9 +350,9 @@ func (e *passiveSessionEs) run(conn net.Conn, handshake *handshakeMsg) {
 
 		e.success(session)
 
-	case msgHandshakeReject:
+	case mtHandshakeReject:
 		// 握手拒绝
-		handshakeReject := response.(*handshakeRejectMsg)
+		handshakeReject := response.(*msgHandshakeReject)
 		e.fail(fmt.Errorf("handshake rejected: %s", handshakeReject.Reason))
 
 	default:

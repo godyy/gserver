@@ -4,15 +4,61 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/pkg/errors"
+
+	cmsg "github.com/godyy/gserver/cluster/msg"
+
 	"github.com/godyy/gnet"
 	"github.com/godyy/gutils/log"
 )
+
+type testMsg struct {
+	value int64
+}
+
+func (m *testMsg) Size() int {
+	return 8
+}
+
+func (m *testMsg) Encode(packet *gnet.Packet) error {
+	if err := packet.WriteVarint(m.value); err != nil {
+		return errors.WithMessage(err, "encode value")
+	}
+	return nil
+}
+
+func (m *testMsg) Decode(packet *gnet.Packet) error {
+	var err error
+	m.value, err = packet.ReadVarint()
+	if err != nil {
+		return errors.WithMessage(err, "decode value")
+	}
+	return nil
+}
+
+func (m *testMsg) Recycle() {
+}
+
+type testMsgCodec struct{}
+
+func (t testMsgCodec) EncodeMsg(m cmsg.Msg, packet *gnet.Packet) error {
+	return m.Encode(packet)
+}
+
+func (t testMsgCodec) DecodeMsg(packet *gnet.Packet) (cmsg.Msg, error) {
+	msg := &testMsg{}
+	if err := msg.Decode(packet); err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
 
 type testHandler struct {
 	logger       log.Logger
@@ -20,13 +66,13 @@ type testHandler struct {
 	wg           *sync.WaitGroup
 }
 
-func (h testHandler) OnSessionPacket(session *Session, packet *gnet.Packet) error {
-	_, err := packet.ReadVarint()
-	if err != nil {
-		h.logger.Errorln("testHandler.OnSessionPacket: read packetId", err)
-		return err
+func (h testHandler) OnSessionMsg(session *Session, msg cmsg.Msg) error {
+	_, ok := msg.(*testMsg)
+	if !ok {
+		h.logger.Errorf("testHandler.OnSessionMsg: invalid msg type: %v", reflect.TypeOf(msg))
+		return errors.New("invalid msg type")
 	}
-	//log.Println("testHandler.OnSessionPacket receive packet", packetId)
+
 	h.receiveCount.Add(1)
 	h.wg.Done()
 	return nil
@@ -68,30 +114,43 @@ func TestSession(t *testing.T) {
 		MaxPacketSize:   16 * 1024,
 	}
 
-	service1 := NewService(ServiceInfo{
-		NodeId: "node1",
-		Addr:   ":1111",
-	}, &ServiceConfig{
-		Token:                 "123",
-		RetryDelayOfListening: 5000,
-		HandshakeTimeout:      5000,
-		Session:               sessionConfig,
-	}, &testHandler{receiveCount: receives, wg: wg}, logger)
+	service1 := NewService(
+		ServiceInfo{
+			NodeId: "node1",
+			Addr:   ":1111",
+		},
+		&ServiceConfig{
+			Token:                 "123",
+			RetryDelayOfListening: 5000,
+			HandshakeTimeout:      5000,
+			Session:               sessionConfig,
+		},
+		&testHandler{receiveCount: receives, wg: wg},
+		&testMsgCodec{},
+		logger,
+	)
 	if err := service1.Start(); err != nil {
 		t.Fatal(err)
 	}
 
-	service2 := NewService(ServiceInfo{
-		NodeId: "node2",
-		Addr:   ":1112",
-	}, &ServiceConfig{
-		Token:                 "123",
-		RetryDelayOfListening: 5000,
-		HandshakeTimeout:      5000,
-		Session:               sessionConfig,
-	}, &testHandler{receiveCount: receives, wg: wg}, logger)
+	service2 := NewService(
+		ServiceInfo{
+			NodeId: "node2",
+			Addr:   ":1112",
+		},
+		&ServiceConfig{
+			Token:                 "123",
+			RetryDelayOfListening: 5000,
+			HandshakeTimeout:      5000,
+			Session:               sessionConfig,
+		},
+		&testHandler{receiveCount: receives, wg: wg},
+		&testMsgCodec{},
+		logger,
+	)
 	if err := service2.Start(); err != nil {
 		t.Fatal(err)
+
 	}
 
 	logger.Warnf("server1: %+v", service1.config)
@@ -111,10 +170,8 @@ func TestSession(t *testing.T) {
 					if err != nil {
 						logger.Errorf("node1 connect node2: %s", err)
 					} else {
-						packetId := packetId.Add(1)
-						p := gnet.GetPacket()
-						p.WriteVarint(packetId)
-						if err := session.SendPacket(p); err != nil {
+						msg := &testMsg{value: packetId.Add(1)}
+						if err := session.SendMsg(msg); err != nil {
 							logger.Errorf("%s send to %s No.%d: %s", service1.NodeId, service2.NodeId, i, err)
 						} else {
 							sends.Add(1)
@@ -135,10 +192,8 @@ func TestSession(t *testing.T) {
 					if err != nil {
 						logger.Errorf("node2 connect node1: %s", err)
 					} else {
-						packetId := packetId.Add(1)
-						p := gnet.GetPacket()
-						p.WriteVarint(packetId)
-						if err := session.SendPacket(p); err != nil {
+						msg := &testMsg{value: packetId.Add(1)}
+						if err := session.SendMsg(msg); err != nil {
 							logger.Errorf("%s send to %s No.%d: %s", service2.NodeId, service1.NodeId, i, err)
 						} else {
 							sends.Add(1)
@@ -205,14 +260,20 @@ func TestConcurrentConnect(t *testing.T) {
 	serviceCount := 50
 	services := make([]*Service, serviceCount)
 	for i := range services {
-		services[i] = NewService(ServiceInfo{
-			NodeId: fmt.Sprintf("Node%d", i),
-			Addr:   fmt.Sprintf(":%d", 40000+i),
-		}, &ServiceConfig{
-			RetryDelayOfListening: 5000,
-			HandshakeTimeout:      500000000,
-			Session:               sessionConfig,
-		}, handler, logger)
+		services[i] = NewService(
+			ServiceInfo{
+				NodeId: fmt.Sprintf("Node%d", i),
+				Addr:   fmt.Sprintf(":%d", 40000+i),
+			},
+			&ServiceConfig{
+				RetryDelayOfListening: 5000,
+				HandshakeTimeout:      500000000,
+				Session:               sessionConfig,
+			},
+			handler,
+			&testMsgCodec{},
+			logger,
+		)
 		services[i].Start()
 	}
 
@@ -238,10 +299,8 @@ func TestConcurrentConnect(t *testing.T) {
 
 						go func(session *Session) {
 							for i := 0; i < m; i++ {
-								packetId := packetId.Add(1)
-								p := gnet.GetPacket()
-								p.WriteVarint(packetId)
-								if err := session.SendPacket(p); err != nil {
+								msg := &testMsg{value: packetId.Add(1)}
+								if err := session.SendMsg(msg); err != nil {
 									logger.Errorf("%s send to %s No.%d: %s", s1.NodeId, s2.NodeId, i, err)
 								} else {
 									sends.Add(1)

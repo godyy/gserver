@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	cmsg "github.com/godyy/gserver/cluster/msg"
+
 	"github.com/godyy/gnet"
 	"github.com/godyy/gutils/log"
 	"github.com/pkg/errors"
@@ -22,7 +24,7 @@ const (
 )
 
 type Handler interface {
-	OnSessionPacket(*Session, *gnet.Packet) error
+	OnSessionMsg(*Session, cmsg.Msg) error
 	OnSessionClosed(*Session)
 }
 
@@ -61,6 +63,7 @@ type Service struct {
 	mtx                sync.Mutex
 	ServiceInfo                               // 服务信息
 	config             *ServiceConfig         // 配置
+	msgCodec           cmsg.Codec             // 消息编解器
 	logger             log.Logger             // 日志
 	sessionOption      *gnet.TCPSessionOption // 网络会话选项
 	state              int32                  // 状态
@@ -70,11 +73,18 @@ type Service struct {
 	sessions           map[string]*Session    // 已联通的会话
 }
 
-func NewService(si ServiceInfo, config *ServiceConfig, h Handler, logger log.Logger) *Service {
+func NewService(
+	si ServiceInfo,
+	config *ServiceConfig,
+	h Handler,
+	msgCodec cmsg.Codec,
+	logger log.Logger,
+) *Service {
 	s := &Service{
 		ServiceInfo:        si,
 		state:              0,
 		config:             config,
+		msgCodec:           msgCodec,
 		logger:             logger,
 		sessionOption:      config.Session.CreateOption(),
 		sessionHandler:     h,
@@ -232,7 +242,9 @@ func (s *Service) listen() {
 					conn.Close()
 					return
 				} else {
-					handshake, ok := msg.(*handshakeMsg)
+					defer msg.recycle()
+
+					handshake, ok := msg.(*msgHandshake)
 					if !ok {
 						s.logger.ErrorFields("read handshake, invalid msg type", zap.Any("Remote", conn.RemoteAddr()), zap.Int8("MsgType", msg.msgType()))
 						conn.Close()
@@ -243,7 +255,7 @@ func (s *Service) listen() {
 					if s.sessions[handshake.NodeId] != nil {
 						// 会话重复
 						s.mtx.Unlock()
-						s.writeMessage(conn, &handshakeRejectMsg{Reason: "session already established"}, s.config.GetHandshakeTimeout())
+						s.writeMessage(conn, &msgHandshakeReject{Reason: "session already established"}, s.config.GetHandshakeTimeout())
 						conn.Close()
 						return
 					}
@@ -261,7 +273,7 @@ func (s *Service) listen() {
 								zap.Any("Remote", conn.RemoteAddr()),
 							))
 					} else {
-						s.writeMessage(conn, &handshakeRejectMsg{Reason: err.Error()}, s.config.GetHandshakeTimeout())
+						s.writeMessage(conn, &msgHandshakeReject{Reason: err.Error()}, s.config.GetHandshakeTimeout())
 						conn.Close()
 					}
 				}
@@ -273,9 +285,9 @@ func (s *Service) listen() {
 	}
 }
 
-// onSessionPacket 接收数据包事件
-func (s *Service) onSessionPacket(session *Session, packet *gnet.Packet) error {
-	return s.sessionHandler.OnSessionPacket(session, packet)
+// onSessionMsg 接收数据包事件
+func (s *Service) onSessionMsg(session *Session, msg cmsg.Msg) error {
+	return s.sessionHandler.OnSessionMsg(session, msg)
 }
 
 // onSessionClosed 接收会话关闭事件
@@ -297,7 +309,7 @@ func (s *Service) putPacket(p *gnet.Packet) {
 var errMessageLenOverLimited = errors.New("message length over limited")
 
 // readMessage 读取消息
-func (s *Service) readMessage(conn net.Conn, timeout ...time.Duration) (message, error) {
+func (s *Service) readMessage(conn net.Conn, timeout ...time.Duration) (msg, error) {
 	if len(timeout) > 0 {
 		conn.SetReadDeadline(time.Now().Add(timeout[0]))
 	} else {
@@ -321,7 +333,7 @@ func (s *Service) readMessage(conn net.Conn, timeout ...time.Duration) (message,
 		return nil, errors.WithMessage(err, "read message")
 	}
 
-	m, _, err := decodeMessage(p)
+	m, err := s.decodeMsg(p)
 	if err != nil {
 		return nil, errors.WithMessage(err, "decode message")
 	}
@@ -330,7 +342,9 @@ func (s *Service) readMessage(conn net.Conn, timeout ...time.Duration) (message,
 }
 
 // writeMessage 发送消息
-func (s *Service) writeMessage(conn net.Conn, msg message, timeout ...time.Duration) error {
+func (s *Service) writeMessage(conn net.Conn, msg msg, timeout ...time.Duration) error {
+	defer msg.recycle()
+
 	if len(timeout) > 0 {
 		conn.SetWriteDeadline(time.Now().Add(timeout[0]))
 	} else {
@@ -344,12 +358,12 @@ func (s *Service) writeMessage(conn net.Conn, msg message, timeout ...time.Durat
 		return errors.WithMessage(err, "write length")
 	}
 
-	p := s.getPacket(n)
-	defer s.putPacket(p)
-
-	if err := encodeMessage(msg, p); err != nil {
+	p, err := s.encodeMsg(msg)
+	if err != nil {
 		return errors.WithMessage(err, "encode message")
 	}
+
+	defer s.putPacket(p)
 
 	if _, err := p.WriteTo(conn); err != nil {
 		return errors.WithMessage(err, "write message")
