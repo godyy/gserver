@@ -270,7 +270,7 @@ func (s *Service) listen() {
 					conn.Close()
 					return
 				} else {
-					defer msg.recycle()
+					defer msg.Recycle()
 
 					handshake, ok := msg.(*msgHandshake)
 					if !ok {
@@ -371,7 +371,7 @@ func (s *Service) readMessage(conn net.Conn, timeout ...time.Duration) (msg, err
 
 // writeMessage 发送消息
 func (s *Service) writeMessage(conn net.Conn, msg msg, timeout ...time.Duration) error {
-	defer msg.recycle()
+	defer msg.Recycle()
 
 	if len(timeout) > 0 {
 		conn.SetWriteDeadline(time.Now().Add(timeout[0]))
@@ -380,7 +380,7 @@ func (s *Service) writeMessage(conn net.Conn, msg msg, timeout ...time.Duration)
 	}
 
 	var buf [4]byte
-	n := msg.size()
+	n := msg.Size()
 	binary.BigEndian.PutUint32(buf[:], uint32(n))
 	if _, err := conn.Write(buf[:]); err != nil {
 		return errors.WithMessage(err, "write length")

@@ -256,7 +256,7 @@ func (e *activeSessionEs) run(remoteNodeId string, remoteAddr string) {
 		return
 	}
 
-	defer msg.recycle()
+	defer msg.Recycle()
 
 	switch msg.msgType() {
 	case mtHandshakeAck:
@@ -337,7 +337,7 @@ func (e *passiveSessionEs) run(conn net.Conn, handshake *msgHandshake) {
 		return
 	}
 
-	defer response.recycle()
+	defer response.Recycle()
 
 	switch response.msgType() {
 	case mtHandshakeCompleted:

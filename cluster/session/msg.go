@@ -21,10 +21,7 @@ const (
 // msg 定义一个消息需要实现的方法
 type msg interface {
 	msgType() int8
-	size() int
-	encode(ctx *Service, p *gnet.Packet) error
-	decode(ctx *Service, p *gnet.Packet) error
-	recycle()
+	cmsg.Msg
 }
 
 var msgCreators = map[int8]func() msg{
@@ -67,11 +64,11 @@ func (m *msgHandshake) msgType() int8 {
 	return mtHandshake
 }
 
-func (m *msgHandshake) size() int {
+func (m *msgHandshake) Size() int {
 	return 1 + 2 + len(m.NodeId) + 2 + len(m.Token)
 }
 
-func (m *msgHandshake) encode(ctx *Service, packet *gnet.Packet) error {
+func (m *msgHandshake) Encode(codec cmsg.Codec, packet *gnet.Packet) error {
 	if err := packet.WriteString(m.NodeId); err != nil {
 		return errors.WithMessage(err, "encode NodeId")
 	}
@@ -83,7 +80,7 @@ func (m *msgHandshake) encode(ctx *Service, packet *gnet.Packet) error {
 	return nil
 }
 
-func (m *msgHandshake) decode(ctx *Service, packet *gnet.Packet) error {
+func (m *msgHandshake) Decode(codec cmsg.Codec, packet *gnet.Packet) error {
 	var err error
 
 	m.NodeId, err = packet.ReadString()
@@ -99,7 +96,7 @@ func (m *msgHandshake) decode(ctx *Service, packet *gnet.Packet) error {
 	return nil
 }
 
-func (m *msgHandshake) recycle() {}
+func (m *msgHandshake) Recycle() {}
 
 // msgHandshakeAck 握手确认
 type msgHandshakeAck struct {
@@ -111,11 +108,11 @@ func (m *msgHandshakeAck) msgType() int8 {
 	return mtHandshakeAck
 }
 
-func (m *msgHandshakeAck) size() int {
+func (m *msgHandshakeAck) Size() int {
 	return 1 + 2 + len(m.NodeId) + 2 + len(m.Token)
 }
 
-func (m *msgHandshakeAck) encode(ctx *Service, packet *gnet.Packet) error {
+func (m *msgHandshakeAck) Encode(codec cmsg.Codec, packet *gnet.Packet) error {
 	if err := packet.WriteString(m.NodeId); err != nil {
 		return errors.WithMessage(err, "encode NodeId")
 	}
@@ -127,7 +124,7 @@ func (m *msgHandshakeAck) encode(ctx *Service, packet *gnet.Packet) error {
 	return nil
 }
 
-func (m *msgHandshakeAck) decode(ctx *Service, packet *gnet.Packet) error {
+func (m *msgHandshakeAck) Decode(codec cmsg.Codec, packet *gnet.Packet) error {
 	var err error
 
 	m.NodeId, err = packet.ReadString()
@@ -143,7 +140,7 @@ func (m *msgHandshakeAck) decode(ctx *Service, packet *gnet.Packet) error {
 	return nil
 }
 
-func (m *msgHandshakeAck) recycle() {}
+func (m *msgHandshakeAck) Recycle() {}
 
 // msgHandshakeCompleted 握手完成
 type msgHandshakeCompleted struct {
@@ -153,19 +150,19 @@ func (m *msgHandshakeCompleted) msgType() int8 {
 	return mtHandshakeCompleted
 }
 
-func (m *msgHandshakeCompleted) size() int {
+func (m *msgHandshakeCompleted) Size() int {
 	return 1
 }
 
-func (m *msgHandshakeCompleted) encode(ctx *Service, packet *gnet.Packet) error {
+func (m *msgHandshakeCompleted) Encode(codec cmsg.Codec, packet *gnet.Packet) error {
 	return nil
 }
 
-func (m *msgHandshakeCompleted) decode(ctx *Service, packet *gnet.Packet) error {
+func (m *msgHandshakeCompleted) Decode(codec cmsg.Codec, packet *gnet.Packet) error {
 	return nil
 }
 
-func (m *msgHandshakeCompleted) recycle() {}
+func (m *msgHandshakeCompleted) Recycle() {}
 
 // msgHandshakeReject 握手拒绝
 type msgHandshakeReject struct {
@@ -176,18 +173,18 @@ func (m *msgHandshakeReject) msgType() int8 {
 	return mtHandshakeReject
 }
 
-func (m *msgHandshakeReject) size() int {
+func (m *msgHandshakeReject) Size() int {
 	return 1 + 2 + len(m.Reason)
 }
 
-func (m *msgHandshakeReject) encode(ctx *Service, packet *gnet.Packet) error {
+func (m *msgHandshakeReject) Encode(codec cmsg.Codec, packet *gnet.Packet) error {
 	if err := packet.WriteString(m.Reason); err != nil {
 		return errors.WithMessage(err, "encode reason")
 	}
 	return nil
 }
 
-func (m *msgHandshakeReject) decode(ctx *Service, packet *gnet.Packet) error {
+func (m *msgHandshakeReject) Decode(codec cmsg.Codec, packet *gnet.Packet) error {
 	var err error
 
 	m.Reason, err = packet.ReadString()
@@ -198,7 +195,7 @@ func (m *msgHandshakeReject) decode(ctx *Service, packet *gnet.Packet) error {
 	return nil
 }
 
-func (m *msgHandshakeReject) recycle() {}
+func (m *msgHandshakeReject) Recycle() {}
 
 // msgHeartbeat 心跳
 type msgHeartbeat struct {
@@ -209,11 +206,11 @@ func (m *msgHeartbeat) msgType() int8 {
 	return mtHeartbeat
 }
 
-func (m *msgHeartbeat) size() int {
+func (m *msgHeartbeat) Size() int {
 	return 1 + 1
 }
 
-func (m *msgHeartbeat) encode(ctx *Service, packet *gnet.Packet) error {
+func (m *msgHeartbeat) Encode(codec cmsg.Codec, packet *gnet.Packet) error {
 	if err := packet.WriteBool(m.Ping); err != nil {
 		return errors.WithMessage(err, "encode PingPong")
 	}
@@ -221,7 +218,7 @@ func (m *msgHeartbeat) encode(ctx *Service, packet *gnet.Packet) error {
 	return nil
 }
 
-func (m *msgHeartbeat) decode(ctx *Service, packet *gnet.Packet) error {
+func (m *msgHeartbeat) Decode(codec cmsg.Codec, packet *gnet.Packet) error {
 	var err error
 
 	m.Ping, err = packet.ReadBool()
@@ -232,7 +229,7 @@ func (m *msgHeartbeat) decode(ctx *Service, packet *gnet.Packet) error {
 	return nil
 }
 
-func (m *msgHeartbeat) recycle() {}
+func (m *msgHeartbeat) Recycle() {}
 
 // msgPayload 负载数据
 type msgPayload struct {
@@ -243,21 +240,21 @@ func (m *msgPayload) msgType() int8 {
 	return mtPayload
 }
 
-func (m *msgPayload) size() int {
+func (m *msgPayload) Size() int {
 	return 1 + m.Payload.Size()
 }
 
-func (m *msgPayload) encode(ctx *Service, packet *gnet.Packet) error {
-	if err := ctx.msgCodec.EncodeMsg(m.Payload, packet); err != nil {
+func (m *msgPayload) Encode(codec cmsg.Codec, packet *gnet.Packet) error {
+	if err := codec.EncodeMsg(m.Payload, packet); err != nil {
 		return errors.WithMessage(err, "encode payload")
 	}
 	return nil
 }
 
-func (m *msgPayload) decode(ctx *Service, packet *gnet.Packet) error {
+func (m *msgPayload) Decode(codec cmsg.Codec, packet *gnet.Packet) error {
 	var err error
 
-	m.Payload, err = ctx.msgCodec.DecodeMsg(packet)
+	m.Payload, err = codec.DecodeMsg(packet)
 	if err != nil {
 		return errors.WithMessage(err, "decode payload")
 	}
@@ -265,16 +262,16 @@ func (m *msgPayload) decode(ctx *Service, packet *gnet.Packet) error {
 	return nil
 }
 
-func (m *msgPayload) recycle() {}
+func (m *msgPayload) Recycle() {}
 
 func (s *Service) encodeMsg(msg msg) (*gnet.Packet, error) {
-	p := s.getPacket(msg.size())
+	p := s.getPacket(msg.Size())
 
 	if err := p.WriteInt8(msg.msgType()); err != nil {
 		return nil, errors.WithMessage(err, "encode msg type")
 	}
 
-	if err := msg.encode(s, p); err != nil {
+	if err := msg.Encode(s.msgCodec, p); err != nil {
 		return nil, err
 	}
 
@@ -295,7 +292,7 @@ func (s *Service) decodeMsg(p *gnet.Packet) (msg, error) {
 		return nil, fmt.Errorf("invalid msg type %d", msgType)
 	}
 
-	if err = mo.decode(s, p); err != nil {
+	if err = mo.Decode(s.msgCodec, p); err != nil {
 		return nil, err
 	}
 

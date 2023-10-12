@@ -27,14 +27,14 @@ func (m *testMsg) Size() int {
 	return 8
 }
 
-func (m *testMsg) Encode(packet *gnet.Packet) error {
+func (m *testMsg) Encode(codec cmsg.Codec, packet *gnet.Packet) error {
 	if err := packet.WriteVarint(m.value); err != nil {
 		return errors.WithMessage(err, "encode value")
 	}
 	return nil
 }
 
-func (m *testMsg) Decode(packet *gnet.Packet) error {
+func (m *testMsg) Decode(codec cmsg.Codec, packet *gnet.Packet) error {
 	var err error
 	m.value, err = packet.ReadVarint()
 	if err != nil {
@@ -49,12 +49,12 @@ func (m *testMsg) Recycle() {
 type testMsgCodec struct{}
 
 func (t testMsgCodec) EncodeMsg(m cmsg.Msg, packet *gnet.Packet) error {
-	return m.Encode(packet)
+	return m.Encode(nil, packet)
 }
 
 func (t testMsgCodec) DecodeMsg(packet *gnet.Packet) (cmsg.Msg, error) {
 	msg := &testMsg{}
-	if err := msg.Decode(packet); err != nil {
+	if err := msg.Decode(nil, packet); err != nil {
 		return nil, err
 	}
 	return msg, nil

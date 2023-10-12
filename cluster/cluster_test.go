@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	cmsg "github.com/godyy/gserver/cluster/msg"
+	"github.com/godyy/gserver/cluster/msg"
 	"github.com/pkg/errors"
 
 	"github.com/BurntSushi/toml"
@@ -86,14 +86,14 @@ func (m *testMsg) Size() int {
 	return 8
 }
 
-func (m *testMsg) Encode(packet *gnet.Packet) error {
+func (m *testMsg) Encode(codec msg.Codec, packet *gnet.Packet) error {
 	if err := packet.WriteVarint(m.value); err != nil {
 		return errors.WithMessage(err, "encode value")
 	}
 	return nil
 }
 
-func (m *testMsg) Decode(packet *gnet.Packet) error {
+func (m *testMsg) Decode(codec msg.Codec, packet *gnet.Packet) error {
 	var err error
 	m.value, err = packet.ReadVarint()
 	if err != nil {
@@ -107,13 +107,13 @@ func (m *testMsg) Recycle() {
 
 type testMsgCodec struct{}
 
-func (t testMsgCodec) EncodeMsg(m cmsg.Msg, packet *gnet.Packet) error {
-	return m.Encode(packet)
+func (t testMsgCodec) EncodeMsg(m msg.Msg, packet *gnet.Packet) error {
+	return m.Encode(nil, packet)
 }
 
-func (t testMsgCodec) DecodeMsg(packet *gnet.Packet) (cmsg.Msg, error) {
+func (t testMsgCodec) DecodeMsg(packet *gnet.Packet) (msg.Msg, error) {
 	msg := &testMsg{}
-	if err := msg.Decode(packet); err != nil {
+	if err := msg.Decode(nil, packet); err != nil {
 		return nil, err
 	}
 	return msg, nil
@@ -125,7 +125,7 @@ type testHandler struct {
 	wg           *sync.WaitGroup
 }
 
-func (h testHandler) OnSessionMsg(session *session.Session, msg cmsg.Msg) error {
+func (h testHandler) OnSessionMsg(session *session.Session, msg msg.Msg) error {
 	_, ok := msg.(*testMsg)
 	if !ok {
 		h.logger.Errorf("testHandler.OnSessionMsg: invalid msg type: %v", reflect.TypeOf(msg))

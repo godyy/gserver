@@ -264,7 +264,7 @@ func (s *Session) sendMessage(msg msg, timeout ...time.Duration) error {
 		return nil
 	}
 
-	defer msg.recycle()
+	defer msg.Recycle()
 
 	p, err := s.service.encodeMsg(msg)
 	if err != nil {
@@ -287,7 +287,7 @@ func (s *Session) OnSessionPacket(gSession gnet.Session, p *gnet.Packet) error {
 		return errors.WithMessage(err, "decode msg")
 	}
 
-	defer msg.recycle()
+	defer msg.Recycle()
 
 	s.mtx.Lock()
 	if s.state == sessionClosed {
