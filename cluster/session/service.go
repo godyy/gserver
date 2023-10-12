@@ -23,11 +23,16 @@ const (
 	serviceClosed  = 2
 )
 
+// Handler 会话事件处理器
 type Handler interface {
+	// OnSessionMsg 会话Msg事件
 	OnSessionMsg(*Session, cmsg.Msg) error
+
+	// OnSessionClosed 会话关闭事件
 	OnSessionClosed(*Session)
 }
 
+// ServiceInfo 服务器基础信息
 type ServiceInfo struct {
 	// 本地结点ID
 	NodeId string `yaml:"NodeId"`
@@ -36,6 +41,7 @@ type ServiceInfo struct {
 	Addr string `yaml:"Addr"`
 }
 
+// ServiceConfig 服务配置
 type ServiceConfig struct {
 	// 口令，用于握手
 	Token string `yaml:"Token"`
@@ -58,6 +64,14 @@ func (c *ServiceConfig) GetHandshakeTimeout() time.Duration {
 	return time.Duration(c.HandshakeTimeout) * time.Millisecond
 }
 
+// ServiceParams 服务参数
+type ServiceParams struct {
+	Info     ServiceInfo // 基础信息
+	MsgCodec cmsg.Codec  // 消息编解码器
+	Handler  Handler     // 会话事件处理器
+	Logger   log.Logger  // 日志工具
+}
+
 // Service 服务
 type Service struct {
 	mtx                sync.Mutex
@@ -74,20 +88,34 @@ type Service struct {
 }
 
 func NewService(
-	si ServiceInfo,
 	config *ServiceConfig,
-	h Handler,
-	msgCodec cmsg.Codec,
-	logger log.Logger,
+	params ServiceParams,
 ) *Service {
+
+	if params.Info.NodeId == "" || params.Info.Addr == "" {
+		panic("invalid service-info")
+	}
+
+	if params.MsgCodec == nil {
+		panic("MsgCodec not specified")
+	}
+
+	if params.Handler == nil {
+		panic("Handler not specified")
+	}
+
+	if params.Logger == nil {
+		panic("Logger not specified")
+	}
+
 	s := &Service{
-		ServiceInfo:        si,
+		ServiceInfo:        params.Info,
 		state:              0,
 		config:             config,
-		msgCodec:           msgCodec,
-		logger:             logger,
+		msgCodec:           params.MsgCodec,
+		logger:             params.Logger,
 		sessionOption:      config.Session.CreateOption(),
-		sessionHandler:     h,
+		sessionHandler:     params.Handler,
 		sessionEstablishes: map[string]*sessionEs{},
 		sessions:           map[string]*Session{},
 	}

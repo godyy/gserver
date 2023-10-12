@@ -34,18 +34,44 @@ type Config struct {
 	DataDriver *data.DriverConfig `yaml:"DataDriver"`
 }
 
+type Params struct {
+	MsgCodec msg.Codec       // 消息解码器
+	Handler  session.Handler // 会话事件处理器
+	Logger   log.Logger      // 日志工具
+}
+
+func (p *Params) check() error {
+	if p.MsgCodec == nil {
+		return errors.New("params: MsgCodec not specified")
+	}
+
+	if p.Handler == nil {
+		return errors.New("params: Handler not specified")
+	}
+
+	if p.Logger == nil {
+		return errors.New("params: Logger not specified")
+	}
+
+	return nil
+}
+
 type Cluster struct {
 	config  *Config          // 配置数据
 	service *session.Service // 提供与集群中其他结点的网络交互
 	dd      data.Driver      // 集群数据驱动
 }
 
-func CreateCluster(config *Config, h session.Handler, msgCodec msg.Codec, logger log.Logger) (*Cluster, error) {
+func CreateCluster(config *Config, params Params) (*Cluster, error) {
+	if err := params.check(); err != nil {
+		return nil, err
+	}
+
 	c := &Cluster{
 		config: config,
 	}
 
-	logger = logger.
+	logger := params.Logger.
 		Named("cluster").
 		WithFields(zap.Dict(
 			"node",
@@ -56,14 +82,16 @@ func CreateCluster(config *Config, h session.Handler, msgCodec msg.Codec, logger
 		))
 
 	c.service = session.NewService(
-		session.ServiceInfo{
-			NodeId: config.NodeInfo.Uuid,
-			Addr:   config.NodeInfo.Addr,
-		},
 		config.Service,
-		h,
-		msgCodec,
-		logger,
+		session.ServiceParams{
+			Info: session.ServiceInfo{
+				NodeId: config.NodeInfo.Uuid,
+				Addr:   config.NodeInfo.Addr,
+			},
+			MsgCodec: params.MsgCodec,
+			Handler:  params.Handler,
+			Logger:   logger,
+		},
 	)
 	c.service.Start()
 

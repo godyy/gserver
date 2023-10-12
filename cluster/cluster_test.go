@@ -199,7 +199,12 @@ func TestCluster(t *testing.T) {
 		Service:    serviceConfig,
 		DataDriver: dataDriverConfig,
 	}
-	node1, err := CreateCluster(node1Config, &testHandler{receiveCount: receives, wg: wg}, &testMsgCodec{}, logger)
+	node1Params := Params{
+		MsgCodec: &testMsgCodec{},
+		Handler:  &testHandler{receiveCount: receives, wg: wg},
+		Logger:   logger,
+	}
+	node1, err := CreateCluster(node1Config, node1Params)
 	if err != nil {
 		logger.Fatal("node1", err)
 	}
@@ -214,7 +219,12 @@ func TestCluster(t *testing.T) {
 		Service:    serviceConfig,
 		DataDriver: dataDriverConfig,
 	}
-	node2, err := CreateCluster(node2Config, &testHandler{receiveCount: receives, wg: wg}, &testMsgCodec{}, logger)
+	node2Params := Params{
+		MsgCodec: &testMsgCodec{},
+		Handler:  &testHandler{receiveCount: receives, wg: wg},
+		Logger:   logger,
+	}
+	node2, err := CreateCluster(node2Config, node2Params)
 	if err != nil {
 		logger.Fatal("node2", err)
 	}
@@ -341,16 +351,23 @@ func TestConcurrentConnect(t *testing.T) {
 	nodeCount := 10
 	nodes := make([]*Cluster, nodeCount)
 	for i := range nodes {
-		node, err := CreateCluster(&Config{
-			NodeInfo: NodeInfo{
-				Uuid:     fmt.Sprintf("Node%d", i),
-				Name:     fmt.Sprintf("Node%d", i),
-				Addr:     fmt.Sprintf(":%d", 40000+i),
-				Category: "node",
+		node, err := CreateCluster(
+			&Config{
+				NodeInfo: NodeInfo{
+					Uuid:     fmt.Sprintf("Node%d", i),
+					Name:     fmt.Sprintf("Node%d", i),
+					Addr:     fmt.Sprintf(":%d", 40000+i),
+					Category: "node",
+				},
+				Service:    serviceConfig,
+				DataDriver: dataDriverConfig,
 			},
-			Service:    serviceConfig,
-			DataDriver: dataDriverConfig,
-		}, handler, &testMsgCodec{}, logger)
+			Params{
+				MsgCodec: &testMsgCodec{},
+				Handler:  handler,
+				Logger:   logger,
+			},
+		)
 		if err != nil {
 			logger.Fatalf("create node %d", i)
 		}

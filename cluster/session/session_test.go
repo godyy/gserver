@@ -115,38 +115,42 @@ func TestSession(t *testing.T) {
 	}
 
 	service1 := NewService(
-		ServiceInfo{
-			NodeId: "node1",
-			Addr:   ":1111",
-		},
 		&ServiceConfig{
 			Token:                 "123",
 			RetryDelayOfListening: 5000,
 			HandshakeTimeout:      5000,
 			Session:               sessionConfig,
 		},
-		&testHandler{receiveCount: receives, wg: wg},
-		&testMsgCodec{},
-		logger,
+		ServiceParams{
+			Info: ServiceInfo{
+				NodeId: "node1",
+				Addr:   ":1111",
+			},
+			MsgCodec: &testMsgCodec{},
+			Handler:  &testHandler{receiveCount: receives, wg: wg},
+			Logger:   logger,
+		},
 	)
 	if err := service1.Start(); err != nil {
 		t.Fatal(err)
 	}
 
 	service2 := NewService(
-		ServiceInfo{
-			NodeId: "node2",
-			Addr:   ":1112",
-		},
 		&ServiceConfig{
 			Token:                 "123",
 			RetryDelayOfListening: 5000,
 			HandshakeTimeout:      5000,
 			Session:               sessionConfig,
 		},
-		&testHandler{receiveCount: receives, wg: wg},
-		&testMsgCodec{},
-		logger,
+		ServiceParams{
+			Info: ServiceInfo{
+				NodeId: "node2",
+				Addr:   ":1112",
+			},
+			MsgCodec: &testMsgCodec{},
+			Handler:  &testHandler{receiveCount: receives, wg: wg},
+			Logger:   logger,
+		},
 	)
 	if err := service2.Start(); err != nil {
 		t.Fatal(err)
@@ -261,18 +265,20 @@ func TestConcurrentConnect(t *testing.T) {
 	services := make([]*Service, serviceCount)
 	for i := range services {
 		services[i] = NewService(
-			ServiceInfo{
-				NodeId: fmt.Sprintf("Node%d", i),
-				Addr:   fmt.Sprintf(":%d", 40000+i),
-			},
 			&ServiceConfig{
 				RetryDelayOfListening: 5000,
 				HandshakeTimeout:      500000000,
 				Session:               sessionConfig,
 			},
-			handler,
-			&testMsgCodec{},
-			logger,
+			ServiceParams{
+				Info: ServiceInfo{
+					NodeId: fmt.Sprintf("Node%d", i),
+					Addr:   fmt.Sprintf(":%d", 40000+i),
+				},
+				MsgCodec: &testMsgCodec{},
+				Handler:  handler,
+				Logger:   logger,
+			},
 		)
 		services[i].Start()
 	}
