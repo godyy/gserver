@@ -108,6 +108,10 @@ func CreateCluster(config *Config, params Params) (*Cluster, error) {
 	return c, nil
 }
 
+func (c *Cluster) NodeId() string {
+	return c.config.NodeInfo.Uuid
+}
+
 func (c *Cluster) Stop() {
 	c.service.Close()
 }

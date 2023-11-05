@@ -6,8 +6,9 @@ require (
 	github.com/BurntSushi/toml v1.3.2
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/godyy/gnet v0.0.0-20230916044928-edbadfaf993e
-	github.com/godyy/gutils v0.0.0-20230922101433-1034bbcc5a5f
+	github.com/godyy/gutils v0.0.0-20231027110712-cd344567beff
 	github.com/pkg/errors v0.9.1
+	github.com/rs/xid v1.5.0
 	go.uber.org/zap v1.26.0
 	gopkg.in/yaml.v2 v2.4.0
 )
