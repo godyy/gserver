@@ -1,132 +1,120 @@
 package actor
 
-import (
-	"container/list"
-	"errors"
-	"time"
+// import (
+// 	"container/list"
+// 	"errors"
+// 	"time"
 
-	"github.com/godyy/gserver/cluster/session"
-)
+// 	"github.com/godyy/gserver/cluster/session"
+// )
 
-var ErrActorStop = errors.New("actor stop")
+// var ErrActorStop = errors.New("actor stop")
 
-func (a *Actor) pushMsg(msg *cmdMsg) {
-	a.mtx.Lock()
-	defer a.mtx.Unlock()
-	if a.isRunning() {
-		a.scheduleExpireTask(time.Now().UnixNano())
-		a.cmdQueue.push(msg)
-	} else {
-		msg.replyError(ErrActorStop)
-	}
-}
+// func (a *Actor) pushMsg(msg *cmdMsg) {
+// 	a.locker.Lock()
+// 	defer a.locker.Unlock()
+// 	if a.isRunning() {
+// 		a.scheduleExpireTask(time.Now().UnixNano())
+// 		a.cmdQueue.push(msg)
+// 		a.cmdCond.Signal()
+// 	} else {
+// 		msg.replyError(ErrActorStop)
+// 	}
+// }
 
-func (a *Actor) pushCmd(cmd cmd) {
-	a.mtx.Lock()
-	defer a.mtx.Unlock()
-	if a.isRunning() {
-		a.cmdQueue.push(cmd)
-	}
-}
+// func (a *Actor) pushCmd(cmd cmd) {
+// 	a.locker.Lock()
+// 	defer a.locker.Unlock()
+// 	if a.isRunning() {
+// 		a.cmdQueue.push(cmd)
+// 		a.cmdCond.Signal()
+// 	}
+// }
 
-type cmd interface {
-	cmdType() int8
-	do(*Actor)
-}
+// type cmd interface {
+// 	cmdType() int8
+// 	do(*Actor)
+// }
 
-type cmdQueue struct {
-	in  *list.List
-	out *list.List
-}
+// type cmdQueue struct {
+// 	l *list.List
+// }
 
-func newCmdQueue() *cmdQueue {
-	return &cmdQueue{
-		in:  list.New(),
-		out: list.New(),
-	}
-}
+// func newCmdQueue() *cmdQueue {
+// 	return &cmdQueue{
+// 		l: list.New(),
+// 	}
+// }
 
-func (cq *cmdQueue) available() bool {
-	if cq.in.Len() <= 0 {
-		return false
-	}
+// func (cq *cmdQueue) len() int { return cq.l.Len() }
 
-	if cq.out.Len() > 0 {
-		panic("actor.cmdQueue: there are cmd not popped")
-	}
+// func (cq *cmdQueue) push(cmd cmd) {
+// 	cq.l.PushBack(cmd)
+// }
 
-	cq.in, cq.out = cq.out, cq.in
-	return true
-}
+// func (cq *cmdQueue) pop() cmd {
+// 	if cq.l.Len() <= 0 {
+// 		return nil
+// 	}
+// 	return cq.l.Remove(cq.l.Front()).(cmd)
+// }
 
-func (cq *cmdQueue) push(cmd cmd) {
-	cq.in.PushBack(cmd)
-}
+// func (cq *cmdQueue) clear() {
+// 	cq.l.Init()
+// }
 
-func (cq *cmdQueue) pop() cmd {
-	front := cq.out.Front()
-	if front == nil {
-		return nil
-	}
-	return cq.out.Remove(front).(cmd)
-}
+// const (
+// 	_ = int8(iota)
+// 	ctMsg
+// 	ctTimer
+// )
 
-func (cq *cmdQueue) clear() {
-	cq.in.Init()
-	cq.out.Init()
-}
+// type cmdMsg struct {
+// 	session session.Session
+// 	msg     msg
+// }
 
-const (
-	_ = int8(iota)
-	ctMsg
-	ctTimer
-)
+// func newCmdMsg(session session.Session, msg msg) *cmdMsg {
+// 	return &cmdMsg{
+// 		session: session,
+// 		msg:     msg,
+// 	}
+// }
 
-type cmdMsg struct {
-	session *session.Session
-	msg     msg
-}
+// func (sm *cmdMsg) cmdType() int8 {
+// 	return ctMsg
+// }
 
-func newCmdMsg(session *session.Session, msg msg) *cmdMsg {
-	return &cmdMsg{
-		session: session,
-		msg:     msg,
-	}
-}
+// func (sm *cmdMsg) do(actor *Actor) {
+// 	actor.handleMsg(sm)
+// }
 
-func (sm *cmdMsg) cmdType() int8 {
-	return ctMsg
-}
+// func (sm *cmdMsg) replyError(err error) {
+// 	var errResponse msg
+// 	switch sm.msg.msgType() {
+// 	case MTRequest:
+// 		// todo
+// 		// msg := sm.msg.(*MsgRequest)
+// 	case MTRPCRequest:
+// 		msg := sm.msg.(*MsgRPCRequest)
+// 		errResponse = NewMsgRPCResponseWithError(msg.ReqId, msg.ToId, msg.FromId, err.Error())
+// 	}
 
-func (sm *cmdMsg) do(actor *Actor) {
-	actor.handleMsg(sm)
-}
+// 	if errResponse != nil {
+// 		_ = sm.session.SendMsg(errResponse)
+// 	}
+// }
 
-func (sm *cmdMsg) replyError(err error) {
-	var errResponse msg
-	switch sm.msg.msgType() {
-	case MTRequest:
-		msg := sm.msg.(*MsgRequest)
-	case MTRPCRequest:
-		msg := sm.msg.(*MsgRPCRequest)
-		errResponse = NewMsgRPCResponseWithError(msg.ReqId, msg.ToId, msg.FromId, err.Error())
-	}
+// type cmdTimer struct{}
 
-	if errResponse != nil {
-		_ = sm.session.SendMsg(errResponse)
-	}
-}
+// func newCmdTimer() *cmdTimer {
+// 	return &cmdTimer{}
+// }
 
-type cmdTimer struct{}
+// func (cmdTimer) cmdType() int8 {
+// 	return ctTimer
+// }
 
-func newCmdTimer() *cmdTimer {
-	return &cmdTimer{}
-}
-
-func (cmdTimer) cmdType() int8 {
-	return ctTimer
-}
-
-func (cmdTimer) do(actor *Actor) {
-	actor.updateScheduledTask(time.Now())
-}
+// func (cmdTimer) do(actor *Actor) {
+// 	actor.updateScheduledTask(time.Now())
+// }

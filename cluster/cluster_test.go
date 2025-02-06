@@ -2,146 +2,67 @@ package cluster
 
 import (
 	"fmt"
+	"github.com/godyy/gserver/cluster/center"
+	"github.com/godyy/gserver/cluster/net"
+	stdnet "net"
 	"os"
 	"os/signal"
-	"reflect"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/godyy/gserver/cluster/msg"
 	"github.com/pkg/errors"
 
-	"github.com/BurntSushi/toml"
-	"github.com/godyy/gnet"
-	"github.com/godyy/gserver/cluster/data"
-	"github.com/godyy/gserver/cluster/session"
 	"github.com/godyy/gutils/log"
-	"gopkg.in/yaml.v2"
 )
 
-func TestConfig(t *testing.T) {
-	config := Config{
-		NodeInfo: NodeInfo{
-			Uuid:     "node",
-			Name:     "node_test",
-			Addr:     ":8888",
-			Category: "test",
-		},
-		Service: &session.ServiceConfig{
-			Token:                 "token",
-			RetryDelayOfListening: 5000,
-			HandshakeTimeout:      10000,
-			Session: session.Config{
-				HeartbeatTimeout: 30000,
-				InactiveTimeout:  600000,
-				ReadTimeout:      60000,
-				WriteTimeout:     60000,
-				ReadBufferSize:   8192,
-				WriteBufferSize:  8192,
-				SendQueueSize:    100,
-				MaxPacketSize:    64 * 1024,
-			},
-		},
-		DataDriver: &data.DriverConfig{
-			DriverType: "redis",
-			Redis: &data.RedisDriverConfig{
-				Addr:          []string{"127.0.0.1:6379"},
-				Password:      "123456",
-				DB:            0,
-				PoolSize:      0,
-				IsCluster:     false,
-				KeyOfNodeInfo: "cluster_node_info",
-			},
-		},
-	}
-
-	configBytes, err := yaml.Marshal(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	os.Mkdir("./bin", os.ModePerm)
-	if err := os.WriteFile("./bin/config-test.yaml", configBytes, os.ModePerm); err != nil {
-		t.Fatal(err)
-	}
-
-	file, err := os.Create("./bin/config-test.toml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := toml.NewEncoder(file).Encode(config); err != nil {
-		t.Fatal(err)
-	}
-	file.Close()
+type testNode struct {
+	nodeId string
+	addr   string
 }
 
-type testMsg struct {
-	value int64
+func (t *testNode) GetNodeId() string {
+	return t.nodeId
 }
 
-func (m *testMsg) Size() int {
-	return 8
+func (t *testNode) GetNodeAddr() string {
+	return t.addr
 }
 
-func (m *testMsg) Encode(codec msg.Codec, packet *gnet.Packet) error {
-	if err := packet.WriteVarint(m.value); err != nil {
-		return errors.WithMessage(err, "encode value")
-	}
-	return nil
+type testCenter struct {
+	nodes map[string]*testNode
 }
 
-func (m *testMsg) Decode(codec msg.Codec, packet *gnet.Packet) error {
-	var err error
-	m.value, err = packet.ReadVarint()
-	if err != nil {
-		return errors.WithMessage(err, "decode value")
-	}
-	return nil
-}
-
-func (m *testMsg) Recycle() {
-}
-
-type testMsgCodec struct{}
-
-func (t testMsgCodec) EncodeMsg(m msg.Msg, packet *gnet.Packet) error {
-	return m.Encode(nil, packet)
-}
-
-func (t testMsgCodec) DecodeMsg(packet *gnet.Packet) (msg.Msg, error) {
-	msg := &testMsg{}
-	if err := msg.Decode(nil, packet); err != nil {
-		return nil, err
-	}
-	return msg, nil
-}
-
-type testHandler struct {
-	logger       log.Logger
-	receiveCount *atomic.Int64
-	wg           *sync.WaitGroup
-}
-
-func (h testHandler) OnSessionMsg(session *session.Session, msg msg.Msg) error {
-	_, ok := msg.(*testMsg)
+func (c *testCenter) GetNode(nodeId string) (center.Node, error) {
+	node, ok := c.nodes[nodeId]
 	if !ok {
-		h.logger.Errorf("testHandler.OnSessionMsg: invalid msg type: %v", reflect.TypeOf(msg))
-		return errors.New("invalid msg type")
+		return nil, errors.New("node not found")
 	}
+	return node, nil
+}
 
-	h.receiveCount.Add(1)
-	h.wg.Done()
+func (c *testCenter) addNode(node *testNode) {
+	c.nodes[node.nodeId] = node
+}
+
+type testAgentHandler struct {
+	onNodePacket func(string, *net.RawPacket) error
+}
+
+func (t *testAgentHandler) OnNodePacket(remoteNodeId string, packet *net.RawPacket) error {
+	if t.onNodePacket != nil {
+		return t.onNodePacket(remoteNodeId, packet)
+	}
 	return nil
 }
 
-func (h testHandler) OnSessionClosed(session *session.Session) {
-	//log.Println("testHandler.OnSessionClosed")
-}
+func TestAgent(t *testing.T) {
+	clientId := "client1"
+	serviceId := "service1"
+	serviceAddr := ":50001"
 
-func TestCluster(t *testing.T) {
 	logger, err := log.CreateLogger(&log.Config{
 		Level:           log.DebugLevel,
 		EnableCaller:    true,
@@ -152,153 +73,99 @@ func TestCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.Named("TestCluster")
 
+	center := &testCenter{nodes: make(map[string]*testNode)}
+	center.addNode(&testNode{
+		nodeId: serviceId,
+		addr:   serviceAddr,
+	})
+
+	sessionConfig := net.SessionConfig{
+		PendingPacketQueueSize: 10,
+		MaxPacketLength:        1024,
+		ReadWriteTimeout:       60 * time.Second,
+		HeartbeatInterval:      1 * time.Second,
+		InactiveTimeout:        5 * time.Minute,
+		ReadBufSize:            10 * 1024,
+		WriteBufSize:           10 * 1024,
+	}
+
+	dialer := func(addr string) (stdnet.Conn, error) {
+		return stdnet.Dial("tcp", addr)
+	}
+	createListener := func(addr string) (stdnet.Listener, error) {
+		return stdnet.Listen("tcp", addr)
+	}
+
+	clientConfig := &net.ClientConfig{
+		NodeId: clientId,
+		Handshake: net.HandshakeConfig{
+			Token:   "123",
+			Timeout: 5 * time.Second,
+		},
+		Session: sessionConfig,
+	}
+	client, err := CreateClient(center, clientConfig, dialer, &testAgentHandler{}, logger)
+	if err != nil {
+		t.Fatal("create client: ", err)
+	}
+
+	serviceConfig := &net.ServiceConfig{
+		NodeId: serviceId,
+		Addr:   serviceAddr,
+		Handshake: net.HandshakeConfig{
+			Token:   "123",
+			Timeout: 5 * time.Second,
+		},
+		Session: sessionConfig,
+	}
+	service, err := CreateService(center, serviceConfig, dialer, createListener, &testAgentHandler{}, logger)
+	if err != nil {
+		t.Fatal("create service: ", err)
+	}
+
+	if err := client.Start(); err != nil {
+		t.Fatal("start client agent: ", err)
+	}
+	if err := service.Start(); err != nil {
+		t.Fatal("start service agent: ", err)
+	}
+
+	if _, err := client.ConnectNode(serviceId); err != nil {
+		t.Fatal("client connect service: ", err)
+	}
+
+	time.Sleep(5 * time.Second)
+
+	if err := client.Close(); err != nil {
+		t.Fatal("close client agent: ", err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal("close service agent: ", err)
+	}
+}
+
+type testListener struct {
+	stdnet.Listener
+	accept func(conn stdnet.Conn)
+}
+
+func (t *testListener) Accept() (stdnet.Conn, error) {
+	conn, err := t.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	t.accept(conn)
+	return conn, nil
+}
+
+func TestConcurrentConnect(t *testing.T) {
 	connects := new(atomic.Int64)
 	packetId := new(atomic.Int64)
 	sends := new(atomic.Int64)
 	receives := new(atomic.Int64)
 	wg := &sync.WaitGroup{}
 
-	serviceConfig := &session.ServiceConfig{
-		Token:                 "123",
-		RetryDelayOfListening: 5000,
-		HandshakeTimeout:      5000,
-		Session: session.Config{
-			HeartbeatTimeout: 2000,
-			InactiveTimeout:  60000,
-			ReadTimeout:      30000,
-			WriteTimeout:     30000,
-			//ReadTimeout:      0,
-			//WriteTimeout:     0,
-			ReadBufferSize:  64 * 1024,
-			WriteBufferSize: 64 * 1024,
-			SendQueueSize:   100,
-			MaxPacketSize:   16 * 1024,
-		},
-	}
-	dataDriverConfig := &data.DriverConfig{
-		DriverType: data.DriverRedis,
-		Redis: &data.RedisDriverConfig{
-			Addr:          []string{"127.0.0.1:6379"},
-			Password:      "",
-			DB:            0,
-			PoolSize:      0,
-			IsCluster:     false,
-			KeyOfNodeInfo: "cluster_node_info",
-		},
-	}
-
-	node1Config := &Config{
-		NodeInfo: NodeInfo{
-			Uuid:     "node1",
-			Name:     "node1",
-			Addr:     ":1111",
-			Category: "node",
-		},
-		Service:    serviceConfig,
-		DataDriver: dataDriverConfig,
-	}
-	node1Params := Params{
-		MsgCodec: &testMsgCodec{},
-		Handler:  &testHandler{receiveCount: receives, wg: wg},
-		Logger:   logger,
-	}
-	node1, err := CreateCluster(node1Config, node1Params)
-	if err != nil {
-		logger.Fatal("node1", err)
-	}
-
-	node2Config := &Config{
-		NodeInfo: NodeInfo{
-			Uuid:     "node2",
-			Name:     "node2",
-			Addr:     ":1112",
-			Category: "node",
-		},
-		Service:    serviceConfig,
-		DataDriver: dataDriverConfig,
-	}
-	node2Params := Params{
-		MsgCodec: &testMsgCodec{},
-		Handler:  &testHandler{receiveCount: receives, wg: wg},
-		Logger:   logger,
-	}
-	node2, err := CreateCluster(node2Config, node2Params)
-	if err != nil {
-		logger.Fatal("node2", err)
-	}
-
-	time.Sleep(1 * time.Second)
-
-	const n = 2000
-	const k = 1000
-
-	go func() {
-		for i := 0; i < n; i++ {
-			go func() {
-				for j := 0; j < k; j++ {
-					connects.Add(1)
-					session, err := node1.ConnectNode("node2")
-					if err != nil {
-						logger.Errorf("node1 connect node2: %s", err)
-					} else {
-						msg := &testMsg{value: packetId.Add(1)}
-						if err := session.SendMsg(msg); err != nil {
-							logger.Errorf("%s send to %s No.%d: %s", node1Config.NodeInfo.Uuid, node2Config.NodeInfo.Uuid, i, err)
-						} else {
-							sends.Add(1)
-						}
-					}
-				}
-			}()
-		}
-	}()
-	wg.Add(n * k)
-
-	go func() {
-		for i := 0; i < n; i++ {
-			go func() {
-				for j := 0; j < k; j++ {
-					connects.Add(1)
-					session, err := node2.ConnectNode("node1")
-					if err != nil {
-						logger.Errorf("node2 connect node1: %s", err)
-					} else {
-						msg := &testMsg{value: packetId.Add(1)}
-						if err := session.SendMsg(msg); err != nil {
-							logger.Errorf("%s send to %s No.%d: %s", node2Config.NodeInfo.Uuid, node1Config.NodeInfo.Uuid, i, err)
-						} else {
-							sends.Add(1)
-						}
-					}
-				}
-			}()
-		}
-	}()
-	wg.Add(n * k)
-
-	chWg := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(chWg)
-	}()
-	chNotify := make(chan os.Signal, 1)
-	signal.Notify(chNotify, syscall.SIGINT)
-	select {
-	case <-chNotify:
-	case <-chWg:
-	}
-
-	node1.Stop()
-	node2.Stop()
-	logger.Warnln("connects", connects.Load())
-	logger.Warnln("packetId", packetId.Load())
-	logger.Warnln("sends", sends.Load())
-	logger.Warnln("receives", receives.Load())
-}
-
-func TestConcurrentConnect(t *testing.T) {
 	logger, err := log.CreateLogger(&log.Config{
 		Level:           log.WarnLevel,
 		EnableCaller:    true,
@@ -309,106 +176,120 @@ func TestConcurrentConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.Named("TestConcurrentConnect")
 
-	connects := new(atomic.Int64)
-	packetId := new(atomic.Int64)
-	sends := new(atomic.Int64)
-	receives := new(atomic.Int64)
-	wg := &sync.WaitGroup{}
+	center := &testCenter{nodes: make(map[string]*testNode)}
 
-	handler := &testHandler{receiveCount: receives, wg: wg}
-
-	serviceConfig := &session.ServiceConfig{
-		Token:                 "123",
-		RetryDelayOfListening: 5000,
-		HandshakeTimeout:      5000,
-		Session: session.Config{
-			HeartbeatTimeout: 2000,
-			InactiveTimeout:  60000,
-			ReadTimeout:      30000,
-			WriteTimeout:     30000,
-			//ReadTimeout:      0,
-			//WriteTimeout:     0,
-			ReadBufferSize:  64 * 1024,
-			WriteBufferSize: 64 * 1024,
-			SendQueueSize:   100,
-			MaxPacketSize:   16 * 1024,
-		},
-	}
-	dataDriverConfig := &data.DriverConfig{
-		DriverType: data.DriverRedis,
-		Redis: &data.RedisDriverConfig{
-			Addr:          []string{"127.0.0.1:6379"},
-			Password:      "",
-			DB:            0,
-			PoolSize:      0,
-			IsCluster:     false,
-			KeyOfNodeInfo: "cluster_node_info",
-		},
+	sessionCfg := net.SessionConfig{
+		PendingPacketQueueSize: 1000,
+		MaxPacketLength:        16 * 1024,
+		ReadBufSize:            64 * 1024,
+		WriteBufSize:           64 * 1024,
+		ReadWriteTimeout:       30 * time.Second,
+		HeartbeatInterval:      5 * time.Second,
+		InactiveTimeout:        5 * time.Minute,
 	}
 
-	nodeCount := 10
-	nodes := make([]*Cluster, nodeCount)
-	for i := range nodes {
-		node, err := CreateCluster(
-			&Config{
-				NodeInfo: NodeInfo{
-					Uuid:     fmt.Sprintf("Node%d", i),
-					Name:     fmt.Sprintf("Node%d", i),
-					Addr:     fmt.Sprintf(":%d", 40000+i),
-					Category: "node",
-				},
-				Service:    serviceConfig,
-				DataDriver: dataDriverConfig,
-			},
-			Params{
-				MsgCodec: &testMsgCodec{},
-				Handler:  handler,
-				Logger:   logger,
-			},
-		)
+	dialer := func(addr string) (stdnet.Conn, error) {
+		conn, err := stdnet.Dial("tcp", addr)
 		if err != nil {
-			logger.Fatalf("create node %d", i)
+			return nil, err
 		}
-		nodes[i] = node
+		tcpConn := conn.(*stdnet.TCPConn)
+		if err := tcpConn.SetReadBuffer(64 * 1024); err != nil {
+			return nil, err
+		}
+		if err := tcpConn.SetWriteBuffer(64 * 1024); err != nil {
+			return nil, err
+		}
+		return conn, nil
 	}
 
-	time.Sleep(10 * time.Second)
+	createListener := func(addr string) (stdnet.Listener, error) {
+		l, err := stdnet.Listen("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		return &testListener{
+			Listener: l,
+			accept: func(conn stdnet.Conn) {
+				tcpConn := conn.(*stdnet.TCPConn)
+				_ = tcpConn.SetReadBuffer(64 * 1024)
+				_ = tcpConn.SetWriteBuffer(64 * 1024)
+			},
+		}, nil
+	}
+
+	handler := &testAgentHandler{
+		onNodePacket: func(_ string, p *net.RawPacket) error {
+			receives.Add(1)
+			wg.Done()
+			return nil
+		},
+	}
+
+	serviceCount := 40
+	services := make([]*Agent, serviceCount)
+	serviceIds := make([]string, serviceCount)
+	for i := range services {
+		serviceCfg := &net.ServiceConfig{
+			NodeId: fmt.Sprintf("Node%d", i),
+			Addr:   fmt.Sprintf(":%d", 40000+i),
+			Handshake: net.HandshakeConfig{
+				Token:   "123",
+				Timeout: 60 * time.Second,
+			},
+			Session: sessionCfg,
+		}
+
+		s, err := CreateService(center, serviceCfg, dialer, createListener, handler, logger)
+		if err != nil {
+			t.Fatalf("create service %d: %s", i, err)
+		}
+
+		services[i] = s
+		serviceIds[i] = serviceCfg.NodeId
+		if err := services[i].Start(); err != nil {
+			t.Fatalf("start service %d: %s", i, err)
+		}
+
+		center.addNode(&testNode{
+			nodeId: serviceCfg.NodeId,
+			addr:   serviceCfg.Addr,
+		})
+	}
+
+	time.Sleep(2 * time.Second)
 
 	n := 10
 	m := 100
-	for i := range nodes {
-		wg.Add(n * m * (nodeCount - 1))
-		go func(node *Cluster, i int) {
-			for k := range nodes {
+	for i := range serviceIds {
+		wg.Add(n * m * (serviceCount - 1))
+		go func(i int) {
+			service := services[i]
+			serviceId := serviceIds[i]
+			for k := range serviceIds {
 				if k == i {
 					continue
 				}
-				go func(n1, n2 *Cluster) {
+				go func(a *Agent, targetNodeId string) {
 					for i := 0; i < n; i++ {
 						connects.Add(1)
-						sess, err := n1.ConnectNode(n2.config.NodeInfo.Uuid)
-						if err != nil {
-							logger.Errorf("%s connect %s: %s", n1.config.NodeInfo.Uuid, n2.config.NodeInfo.Uuid, err)
-							return
-						}
-
-						go func(session *session.Session) {
+						go func() {
 							for i := 0; i < m; i++ {
-								msg := &testMsg{value: packetId.Add(1)}
-								if err := session.SendMsg(msg); err != nil {
-									logger.Errorf("%s send to %s No.%d: %s", n1.config.NodeInfo.Uuid, n2.config.NodeInfo.Uuid, i, err)
+								p := net.NewRawPacketWithCap(8)
+								_ = p.WriteInt64(packetId.Add(1))
+								if err := a.Send2Node(targetNodeId, p); err != nil {
+									logger.Errorf("%s send to %s No.%d: %s", serviceId, targetNodeId, i, err)
 								} else {
 									sends.Add(1)
 								}
 							}
-						}(sess)
+						}()
 					}
-				}(node, nodes[k])
+				}(service, serviceIds[k])
 			}
 
-		}(nodes[i], i)
+		}(i)
 	}
 
 	chWg := make(chan struct{})
@@ -423,8 +304,8 @@ func TestConcurrentConnect(t *testing.T) {
 	case <-chWg:
 	}
 
-	for i := range nodes {
-		nodes[i].Stop()
+	for i := range services {
+		_ = services[i].Close()
 	}
 
 	logger.Warnln("connects", connects.Load())

@@ -1,148 +1,128 @@
 package cluster
 
 import (
-	"github.com/godyy/gserver/cluster/data"
-	"github.com/godyy/gserver/cluster/msg"
-	"github.com/godyy/gserver/cluster/session"
+	"github.com/godyy/gserver/cluster/center"
+	"github.com/godyy/gserver/cluster/net"
 	"github.com/godyy/gutils/log"
-	"github.com/pkg/errors"
-	"go.uber.org/zap"
+	pkg_errors "github.com/pkg/errors"
 )
 
-type NodeInfo struct {
-	// 结点ID
-	Uuid string `yaml:"Uuid"`
-
-	// 结点名称
-	Name string `yaml:"Name"`
-
-	// 类型
-	Category string `yaml:"Category"`
-
-	// 地址
-	Addr string `yaml:"Addr"`
+// AgentHandler Agent Handler.
+type AgentHandler interface {
+	// OnNodePacket 处理节点数据包.
+	// 当节点数据包到达时，会调用此方法.
+	OnNodePacket(remoteNodeId string, p *net.RawPacket) error
 }
 
-type Config struct {
-	// 结点信息
-	NodeInfo NodeInfo `yaml:"NodeInfo"`
-
-	// 网络服务相关配置
-	Service *session.ServiceConfig `yaml:"Service"`
-
-	// 数据驱动相关配置
-	DataDriver *data.DriverConfig `yaml:"DataDriver"`
+// Agent cluster Agent.
+// 提供访问集群的相关功能.
+type Agent struct {
+	center     center.Center      // 数据中心.
+	sessionMgr net.SessionManager // 网络 session 管理器
+	handler    AgentHandler       // 处理器.
 }
 
-type Params struct {
-	MsgCodec msg.Codec       // 消息解码器
-	Handler  session.Handler // 会话事件处理器
-	Logger   log.Logger      // 日志工具
-}
-
-func (p *Params) check() error {
-	if p.MsgCodec == nil {
-		return errors.New("params: MsgCodec not specified")
+// Start 启动, 接入集群.
+func (a *Agent) Start() error {
+	if err := a.sessionMgr.Start(); err != nil {
+		return err
 	}
-
-	if p.Handler == nil {
-		return errors.New("params: Handler not specified")
-	}
-
-	if p.Logger == nil {
-		return errors.New("params: Logger not specified")
-	}
-
 	return nil
 }
 
-type Cluster struct {
-	config  *Config          // 配置数据
-	service *session.Service // 提供与集群中其他结点的网络交互
-	dd      data.Driver      // 集群数据驱动
+// Close 关闭，中断与集群的连接.
+func (a *Agent) Close() error {
+	return a.sessionMgr.Close()
 }
 
-func CreateCluster(config *Config, params Params) (*Cluster, error) {
-	if err := params.check(); err != nil {
-		return nil, err
+// getNode 通过 nodeId 获取集群中的节点信息.
+func (a *Agent) getNode(nodeId string) (center.Node, error) {
+	node, err := a.center.GetNode(nodeId)
+	if err != nil {
+		return nil, pkg_errors.WithMessage(err, "get node info from center")
 	}
+	return node, nil
+}
 
-	c := &Cluster{
-		config: config,
+// ConnectNode 连接集群中 nodeId 指向的节点.
+func (a *Agent) ConnectNode(nodeId string) (net.Session, error) {
+	if session := a.sessionMgr.GetSession(nodeId); session != nil {
+		return session, nil
 	}
-
-	logger := params.Logger.
-		Named("cluster").
-		WithFields(zap.Dict(
-			"node",
-			zap.String("Uuid", config.NodeInfo.Uuid),
-			zap.String("Name", config.NodeInfo.Name),
-			zap.String("Category", config.NodeInfo.Category),
-			zap.String("Addr", config.NodeInfo.Addr),
-		))
-
-	c.service = session.NewService(
-		config.Service,
-		session.ServiceParams{
-			Info: session.ServiceInfo{
-				NodeId: config.NodeInfo.Uuid,
-				Addr:   config.NodeInfo.Addr,
-			},
-			MsgCodec: params.MsgCodec,
-			Handler:  params.Handler,
-			Logger:   logger,
-		},
-	)
-	c.service.Start()
-
-	dd, err := data.CreateDriver(config.DataDriver)
+	node, err := a.getNode(nodeId)
 	if err != nil {
 		return nil, err
 	}
-	c.dd = dd
+	return a.sessionMgr.Connect(nodeId, node.GetNodeAddr())
+}
 
-	if err := c.updateNodeInfo(); err != nil {
+// Send2Node 向集群中 nodeId 指向的节点发送数据包.
+func (a *Agent) Send2Node(nodeId string, p *net.RawPacket) error {
+	session, err := a.ConnectNode(nodeId)
+	if err != nil {
+		return pkg_errors.WithMessage(err, "connect node")
+	}
+	return session.SendRaw(p)
+}
+
+// OnSessionPacket 处理从 session 接收到的数据包.
+// 内部调用，外部无需访问.
+func (a *Agent) OnSessionPacket(session net.Session, p *net.RawPacket) error {
+	return a.handler.OnNodePacket(session.RemoteNodeId(), p)
+}
+
+// CreateClient 创建 client 端 Agent.
+func CreateClient(
+	center center.Center,
+	cfg *net.ClientConfig,
+	dialer net.Dialer,
+	handler AgentHandler,
+	logger log.Logger) (*Agent, error) {
+
+	if handler == nil {
+		return nil, pkg_errors.New("cluster: handler nil")
+	}
+
+	agent := &Agent{
+		center:  center,
+		handler: handler,
+	}
+
+	sessionMgr, err := net.CreateClient(cfg, dialer, agent, logger)
+	if err != nil {
 		return nil, err
 	}
 
-	return c, nil
+	agent.sessionMgr = sessionMgr
+
+	return agent, nil
 }
 
-func (c *Cluster) NodeId() string {
-	return c.config.NodeInfo.Uuid
-}
+// CreateService 创建 service 端 Agent.
+func CreateService(
+	center center.Center,
+	cfg *net.ServiceConfig,
+	dialer net.Dialer,
+	createListener net.CreateListener,
+	handler AgentHandler,
+	logger log.Logger,
+) (*Agent, error) {
 
-func (c *Cluster) Stop() {
-	c.service.Close()
-}
-
-func (c *Cluster) GetNodeInfo(nodeId string, ni *data.NodeInfo) error {
-	return c.dd.LoadNode(nodeId, ni)
-}
-
-func (c *Cluster) ConnectNode(nodeId string) (*session.Session, error) {
-	if nodeId == c.config.NodeInfo.Uuid {
-		return nil, session.ErrConnectSelf
+	if handler == nil {
+		return nil, pkg_errors.New("cluster: handler nil")
 	}
 
-	if sess := c.service.GetSession(nodeId); sess != nil {
-		return sess, nil
+	agent := &Agent{
+		center:  center,
+		handler: handler,
 	}
 
-	var ni data.NodeInfo
-	if err := c.GetNodeInfo(nodeId, &ni); err != nil {
-		return nil, errors.WithMessage(err, "load NodeInfo")
+	sessionMgr, err := net.CreateService(cfg, dialer, createListener, agent, logger)
+	if err != nil {
+		return nil, err
 	}
 
-	return c.service.Connect(nodeId, ni.Addr)
-}
+	agent.sessionMgr = sessionMgr
 
-func (c *Cluster) updateNodeInfo() error {
-	ni := data.NodeInfo{
-		Uuid:     c.config.NodeInfo.Uuid,
-		Name:     c.config.NodeInfo.Name,
-		Addr:     c.config.NodeInfo.Addr,
-		Category: c.config.NodeInfo.Category,
-	}
-	return c.dd.SaveNode(ni.Uuid, &ni)
+	return agent, nil
 }
